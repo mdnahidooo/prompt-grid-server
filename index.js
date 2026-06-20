@@ -5,10 +5,10 @@ const express = require("express");
 const dontenv = require("dotenv");
 const cors = require("cors");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
-const { createRemoteJWKSet, jwtVerify } = require("jose-cjs");
+// const { createRemoteJWKSet, jwtVerify } = require("jose-cjs");
 dontenv.config();
 
-const uri = process.env.MONGODB_URI;
+const uri = process.env.MONGO_DB_URI;
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -29,34 +29,6 @@ const client = new MongoClient(uri, {
     },
 });
 
-const JWKS = createRemoteJWKSet(
-    new URL(`${process.env.CLIENT_URL}/api/auth/jwks`),
-);
-
-const verifyToken = async (req, res, next) => {
-    const authHeader = req.headers.authorization;
-
-    if (!authHeader || !authHeader.startsWith("Bearer")) {
-        return res.status(401).json({ msg: "Unauthorized" });
-    }
-
-
-    const token = authHeader.split(" ")[1];
-
-    if (!token) {
-        return res.status(401).json({ msg: "Unauthorized" });
-    }
-
-    try {
-        const { payload } = await jwtVerify(token, JWKS);
-        req.user = payload;
-
-        next();
-    } catch (error) {
-        console.log(error);
-        return res.status(401).json({ msg: "Unauthorized" });
-    }
-};
 
 
 
@@ -66,15 +38,69 @@ async function run() {
 
 
         const db = client.db("PromptGrid");
-        const userCollection = db.collection("user");     
+        const userCollection = db.collection("user");
+        const promptCollection = db.collection("prompts");
 
 
 
 
 
+        app.get('/api/my-prompts', async (req, res) => {
+            const query = {};
+            if (req.query.creatorId) {
+                query.creatorId = req.query.creatorId;
+            }
+            // Using find().toArray() to get all matching prompts
+            const result = await promptCollection.find(query).toArray();
+            res.send(result || []);
+        });
 
 
+        app.get('/api/my/prompts', async (req, res) => {
+            const query = {};
+            if (req.query.creatorId) {
+                query.creatorId = req.query.creatorId;
+            }
+            const result = await promptCollection.findOne(query);
 
+            res.send(result || {});
+        })
+
+
+        app.post("/api/prompts", async (req, res) => {
+            const promptData = req.body;
+            const newPromptData = {
+                ...promptData,
+                createdAt: new Date()
+            }
+            const result = await promptCollection.insertOne(newPromptData);
+
+            res.json(result);
+        });
+
+
+        app.patch("/api/prompts/:promptId", async (req, res) => {
+            const { promptId } = req.params;
+            const updatedData = req.body;
+
+            const result = await promptCollection.updateOne(
+                { _id: new ObjectId(promptId) },
+                { $set: updatedData }
+            );
+
+            res.json(result);
+        });
+
+
+        app.delete('/api/prompts/:promptId', async (req, res) => {
+            const { promptId } = req.params;
+
+            const result = await promptCollection.deleteOne({
+                _id: new ObjectId(promptId),
+            });
+
+            res.send(result);
+        });
 
 
 
