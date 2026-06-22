@@ -44,15 +44,199 @@ async function run() {
         const ratingCollection = db.collection("prompt-ratings")
         const bookmarkCollection = db.collection("prompt-bookmarks")
         const reportCollection = db.collection("prompt-reports");
+        const subscriptionsCollection = db.collection("subscriptions");
+        const copiedPromptCollection = db.collection("copied-prompts");
 
 
 
+        // app.post("/subscription", async (req, res) => {
+        //     // console.log("BODY =", req.body);
+        //     const { sessionId, userId, priceId } = req.body;
+
+        //     const isExist = await subscriptionsCollection.findOne({ sessionId });
+        //     if (isExist) {
+        //         return res.json({ msg: "Already exist!" });
+        //     }
+
+        //     await subscriptionsCollection.insertOne({
+        //         sessionId,
+        //         userId,
+        //         priceId,
+        //     });
+
+        //     //update user role
+        //     await userCollection.updateOne(
+        //         { _id: new ObjectId(userId) },
+        //         { $set: { plan: "premium" } },
+        //     );
+
+        //     res.json({ msg: "Payment successful!" });
+        // });
 
 
+        app.post("/subscription", async (req, res) => {
+            try {
+                const {
+                    sessionId,
+                    userId,
+                    userEmail,
+                    priceId,
+                    amount,
+                } = req.body;
+
+                const exists = await subscriptionsCollection.findOne({
+                    sessionId,
+                });
+
+                if (exists) {
+                    return res.json({
+                        success: true,
+                        message: "Already processed",
+                    });
+                }
+
+                await subscriptionsCollection.insertOne({
+                    sessionId,
+                    userId,
+                    userEmail,
+                    priceId,
+                    amount,
+                    status: "paid",
+                    createdAt: new Date(),
+                });
+
+                await userCollection.updateOne(
+                    {
+                        _id: new ObjectId(userId),
+                    },
+                    {
+                        $set: {
+                            plan: "premium",
+                        },
+                    }
+                );
+
+                res.json({
+                    success: true,
+                    message: "Payment successful",
+                });
+
+            } catch (err) {
+                console.error(err);
+
+                res.status(500).json({
+                    success: false,
+                    message: "Subscription failed",
+                });
+            }
+        });
 
 
+        // all prompt api(public):
+        app.get("/api/prompts", async (req, res) => {
+            try {
+                const {
+                    search,
+                    category,
+                    aiTool,
+                    difficulty,
+                    sort = "latest",
+                    page = 1,
+                    limit = 12
+                } = req.query;
 
+                // ---------------- BASE QUERY (LOCKED) ----------------
+                const query = {
+                    status: "approved"
+                };
 
+                // ---------------- SEARCH ----------------
+                if (search) {
+                    query.$or = [
+                        { title: { $regex: search, $options: "i" } },
+                        { tags: { $regex: search, $options: "i" } },
+                        { aiTool: { $regex: search, $options: "i" } }
+                    ];
+                }
+
+                // ---------------- FILTERS ----------------
+                if (category && category !== "all") {
+                    query.category = category;
+                }
+
+                if (aiTool && aiTool !== "all") {
+                    query.aiTool = aiTool;
+                }
+
+                if (difficulty && difficulty !== "all") {
+                    query.difficulty = difficulty;
+                }
+
+                // ---------------- SORT LOGIC ----------------
+                let sortQuery = { createdAt: -1 };
+
+                if (sort === "popular") {
+                    sortQuery = { ratingAvg: -1 };
+                }
+
+                if (sort === "copied") {
+                    sortQuery = { copyCount: -1 };
+                }
+
+                if (sort === "latest") {
+                    sortQuery = { createdAt: -1 };
+                }
+
+                // ---------------- PAGINATION ----------------
+                const pageNum = Number(page);
+                const limitNum = Number(limit);
+                const skip = (pageNum - 1) * limitNum;
+
+                const total = await promptCollection.countDocuments(query);
+
+                const prompts = await promptCollection
+                    .find(query)
+                    .sort(sortQuery)
+                    .skip(skip)
+                    .limit(limitNum)
+                    .toArray();
+
+                // ---------------- ENRICH CREATOR ----------------
+                const enriched = await Promise.all(
+                    prompts.map(async (prompt) => {
+                        const creator = await userCollection.findOne(
+                            { _id: new ObjectId(prompt.creatorId) },
+                            { projection: { name: 1, image: 1 } }
+                        );
+
+                        return {
+                            ...prompt,
+                            creator: creator || {
+                                name: "Unknown",
+                                image: ""
+                            }
+                        };
+                    })
+                );
+
+                // ---------------- RESPONSE ----------------
+                res.json({
+                    success: true,
+                    total,
+                    page: pageNum,
+                    limit: limitNum,
+                    data: enriched
+                });
+
+            } catch (err) {
+                console.error("PROMPTS API ERROR:", err);
+                res.status(500).json({
+                    success: false,
+                    message: "Failed to fetch prompts"
+                });
+            }
+        });
+        
 
         app.get("/api/prompts/featured", async (req, res) => {
             try {
@@ -225,22 +409,156 @@ async function run() {
         });
 
 
+        //copy related all api:
+        // app.patch("/api/prompts/:id/copy", async (req, res) => {
+        //     try {
+        //         const { id } = req.params;
+
+        //         await promptCollection.updateOne(
+        //             { _id: new ObjectId(id) },
+        //             { $inc: { copyCount: 1 } }
+        //         );
+
+        //         res.json({ success: true });
+        //     } catch (err) {
+        //         res.status(500).json({ error: "Copy failed" });
+        //     }
+        // });
 
         app.patch("/api/prompts/:id/copy", async (req, res) => {
             try {
                 const { id } = req.params;
+                const { userId, content, title } = req.body;
 
+                if (!userId) {
+                    return res.status(400).json({ error: "Missing userId" });
+                }
+
+                // 1. increase copy count
                 await promptCollection.updateOne(
                     { _id: new ObjectId(id) },
                     { $inc: { copyCount: 1 } }
                 );
 
+                // 2. store full copy history
+                await copiedPromptCollection.insertOne({
+                    promptId: new ObjectId(id),
+                    userId: new ObjectId(userId),
+
+                    content: content || "",
+                    title: title || "",
+
+                    createdAt: new Date()
+                });
+
                 res.json({ success: true });
+
             } catch (err) {
+                console.error(err);
                 res.status(500).json({ error: "Copy failed" });
             }
         });
 
+
+        app.get("/api/user/copied-prompts", async (req, res) => {
+            try {
+                const { userId } = req.query;
+
+                if (!ObjectId.isValid(userId)) {
+                    return res.status(400).json({ error: "Invalid userId" });
+                }
+
+                // 1. get copied list (dashboard)
+                const copies = await copiedPromptCollection.aggregate([
+                    {
+                        $match: {
+                            userId: new ObjectId(userId)
+                        }
+                    },
+                    {
+                        $sort: {
+                            createdAt: -1
+                        }
+                    },
+                    {
+                        $lookup: {
+                            from: "prompts",
+                            localField: "promptId",
+                            foreignField: "_id",
+                            as: "prompt"
+                        }
+                    },
+                    {
+                        $unwind: "$prompt"
+                    },
+                    {
+                        $project: {
+                            _id: 1,
+                            createdAt: 1,
+                            content: 1,
+
+                            promptTitle: "$prompt.title",
+                            promptThumbnail: "$prompt.thumbnail",
+                            promptCategory: "$prompt.category",
+                            promptVisibility: "$prompt.visibility"
+                        }
+                    }
+                ]).toArray();
+
+                // 2. total copy count (profile stats)
+                const totalCopy = await copiedPromptCollection.countDocuments({
+                    userId: new ObjectId(userId)
+                });
+
+                res.json({
+                    success: true,
+
+                    // dashboard data
+                    data: copies,
+
+                    // profile stats
+                    stats: {
+                        totalCopy
+                    }
+                });
+
+            } catch (err) {
+                console.error(err);
+                res.status(500).json({ error: "Failed to fetch copied prompts" });
+            }
+        });
+
+
+        app.delete("/api/user/copied-prompts/:id", async (req, res) => {
+            try {
+                const { id } = req.params;
+
+                await copiedPromptCollection.deleteOne({
+                    _id: new ObjectId(id),
+                });
+
+                res.json({ success: true });
+            } catch (err) {
+                res.status(500).json({ error: "Failed to delete item" });
+            }
+        });
+
+        app.delete("/api/user/copied-prompts", async (req, res) => {
+            try {
+                const { userId } = req.query;
+
+                await copiedPromptCollection.deleteMany({
+                    userId: new ObjectId(userId),
+                });
+
+                res.json({ success: true });
+            } catch (err) {
+                res.status(500).json({ error: "Failed to clear history" });
+            }
+        });
+
+
+        // -------------------
 
         app.post("/api/prompts/:id/report", async (req, res) => {
             try {
@@ -283,14 +601,101 @@ async function run() {
                 res.status(500).json({ error: "Failed to report" });
             }
         });
-        
+
         // -----------
 
+        app.get("/api/reviews/all", async (req, res) => {
+            try {
+                const reviews = await ratingCollection
+                    .find({ review: { $ne: "" } })
+                    .sort({ createdAt: -1 })
+                    .limit(50)
+                    .toArray();
+
+                res.json(reviews);
+            } catch (err) {
+                res.status(500).json({ error: "Failed to load reviews" });
+            }
+        });
+
+
+        // app.get("/api/reviews/my", async (req, res) => {
+        //     try {
+        //         const { userId } = req.query;
+
+        //         if (!userId) {
+        //             return res.status(400).json({ error: "userId required" });
+        //         }
+
+        //         const reviews = await ratingCollection
+        //             .find({
+        //                 userId: userId, // only this user's reviews
+        //                 review: { $ne: "" }
+        //             })
+        //             .sort({ createdAt: -1 })
+        //             .toArray();
+
+        //         res.json({
+        //             success: true,
+        //             data: reviews
+        //         });
+
+        //     } catch (err) {
+        //         console.error(err);
+        //         res.status(500).json({ error: "Failed to load user reviews" });
+        //     }
+        // });
+
+
+        app.get("/api/user/reviews", async (req, res) => {
+            try {
+                const { userId } = req.query;
+
+                // 1. validation
+                if (!userId || !ObjectId.isValid(userId)) {
+                    return res.status(400).json({
+                        success: false,
+                        message: "Invalid userId"
+                    });
+                }
+
+                const reviews = await ratingCollection
+                    .find({
+                        userId: new ObjectId(userId)
+                    })
+                    .sort({ createdAt: -1 })
+                    .toArray();
+
+                res.json({
+                    success: true,
+                    data: reviews
+                });
+
+            } catch (err) {
+                console.error("USER REVIEWS ERROR:", err);
+
+                res.status(500).json({
+                    success: false,
+                    message: "Failed to fetch user reviews"
+                });
+            }
+        });
+
+        
         app.post("/api/prompts/:id/rate", async (req, res) => {
             try {
                 const { id } = req.params;
-                const { userId, rating } = req.body;
 
+                const {
+                    userId,
+                    rating,
+                    userPlan,
+                    userName,
+                    userImage,
+                    review
+                } = req.body;
+
+                // ---------------- VALIDATION ----------------
                 if (!ObjectId.isValid(id)) {
                     return res.status(400).json({ error: "Invalid prompt id" });
                 }
@@ -299,24 +704,65 @@ async function run() {
                     return res.status(400).json({ error: "Missing data" });
                 }
 
-                // 1. Upsert rating (one user = one rating)
-                await ratingCollection.updateOne(
-                    { promptId: new ObjectId(id), userId: new ObjectId(userId) },
+                const numericRating = Number(rating);
+
+                if (numericRating < 1 || numericRating > 5) {
+                    return res.status(400).json({ error: "Invalid rating value" });
+                }
+
+                // ---------------- GET PROMPT ----------------
+                const prompt = await promptCollection.findOne({
+                    _id: new ObjectId(id)
+                });
+
+                if (!prompt) {
+                    return res.status(404).json({ error: "Prompt not found" });
+                }
+
+                // ---------------- ACCESS CONTROL ----------------
+                const isBlocked =
+                    (userPlan || "free") === "free" &&
+                    prompt.visibility === "private";
+
+                if (isBlocked) {
+                    return res.status(403).json({
+                        error: "Free users cannot rate private prompts"
+                    });
+                }
+
+                // ---------------- ONE USER ONE RATING ----------------
+                const existing = await ratingCollection.findOne({
+                    promptId: new ObjectId(id),
+                    userId: new ObjectId(userId)
+                });
+
+                if (existing) {
+                    return res.status(409).json({
+                        error: "You already rated this prompt"
+                    });
+                }
+
+                // ---------------- INSERT RATING ----------------
+                await ratingCollection.insertOne({
+                    promptId: new ObjectId(id),
+                    userId: new ObjectId(userId),
+
+                    userName: userName || "Unknown",
+                    userImage: userImage || "",
+
+                    rating: numericRating,
+                    review: review || "",
+
+                    createdAt: new Date()
+                });
+
+                // ---------------- RECALCULATE STATS ----------------
+                const stats = await ratingCollection.aggregate([
                     {
-                        $set: {
-                            rating: Number(rating),
-                            updatedAt: new Date()
-                        },
-                        $setOnInsert: {
-                            createdAt: new Date()
+                        $match: {
+                            promptId: new ObjectId(id)
                         }
                     },
-                    { upsert: true }
-                );
-
-                // 2. Recalculate average
-                const stats = await ratingCollection.aggregate([
-                    { $match: { promptId: new ObjectId(id) } },
                     {
                         $group: {
                             _id: "$promptId",
@@ -329,7 +775,7 @@ async function run() {
                 const avg = stats[0]?.avg || 0;
                 const count = stats[0]?.count || 0;
 
-                // 3. Update prompt cache
+                // ---------------- UPDATE PROMPT CACHE ----------------
                 await promptCollection.updateOne(
                     { _id: new ObjectId(id) },
                     {
@@ -340,10 +786,15 @@ async function run() {
                     }
                 );
 
-                res.json({ success: true, avg, count });
+                // ---------------- RESPONSE ----------------
+                res.json({
+                    success: true,
+                    avg,
+                    count
+                });
 
             } catch (err) {
-                console.error(err);
+                console.error("RATING ERROR:", err);
                 res.status(500).json({ error: "Rating failed" });
             }
         });
@@ -858,7 +1309,48 @@ async function run() {
         });
 
 
+        // user profile er api:
+        app.get("/api/user/stats", async (req, res) => {
+            try {
+                const { userId } = req.query;
 
+                if (!ObjectId.isValid(userId)) {
+                    return res.status(400).json({ error: "Invalid userId" });
+                }
+
+                // 🔥 CONSISTENT TYPE (STRING BASED SAFE)
+                const id = userId.toString();
+
+                const totalPrompts = await promptCollection.countDocuments({
+                    creatorId: id,
+                });
+
+                const totalCopy = await copiedPromptCollection.countDocuments({
+                    userId: id,
+                });
+
+                const bookmarks = await bookmarkCollection.countDocuments({
+                    userId: id,
+                });
+
+                const recentCopies = await copiedPromptCollection
+                    .find({ userId: id })
+                    .sort({ createdAt: -1 })
+                    .limit(5)
+                    .toArray();
+
+                res.json({
+                    totalPrompts,
+                    totalCopy,
+                    bookmarks,
+                    recentCopies,
+                });
+
+            } catch (err) {
+                console.error(err);
+                res.status(500).json({ error: "Stats fetch failed" });
+            }
+        });
 
 
         //---------------
@@ -872,35 +1364,65 @@ async function run() {
                             totalPrompts: { $sum: 1 }
                         }
                     },
+
+                    // 🔥 convert string → ObjectId safely
+                    {
+                        $addFields: {
+                            creatorObjId: {
+                                $convert: {
+                                    input: "$_id",
+                                    to: "objectId",
+                                    onError: null,
+                                    onNull: null
+                                }
+                            }
+                        }
+                    },
+
+                    // 🔥 only valid ids
+                    {
+                        $match: {
+                            creatorObjId: { $ne: null }
+                        }
+                    },
+
+                    {
+                        $lookup: {
+                            from: "user",
+                            localField: "creatorObjId",
+                            foreignField: "_id",
+                            as: "user"
+                        }
+                    },
+
+                    {
+                        $unwind: "$user"
+                    },
+
+                    {
+                        $project: {
+                            _id: 0,
+                            creatorId: "$_id",
+                            name: "$user.name",
+                            image: "$user.image",
+                            totalPrompts: 1
+                        }
+                    },
+
                     {
                         $sort: { totalPrompts: -1 }
                     },
+
                     {
                         $limit: 10
                     }
                 ]).toArray();
 
-                const enriched = await Promise.all(
-                    topCreators.map(async (creator) => {
-                        const user = await userCollection.findOne({
-                            _id: new ObjectId(creator._id)
-                        });
+                res.json(topCreators);
 
-                        if (!user) return null;
-
-                        return {
-                            creatorId: creator._id,
-                            name: user.name,
-                            image: user.image,
-                            totalPrompts: creator.totalPrompts
-                        };
-                    })
-                );
-
-                res.send(enriched.filter(Boolean));
             } catch (err) {
                 console.error(err);
-                res.status(500).send({ error: "Failed to fetch top creators" });
+                res.status(500).json({ error: "Failed to fetch top creators" });
             }
         });
 
