@@ -589,6 +589,7 @@ async function run() {
                     promptId: new ObjectId(id),
                     userId: new ObjectId(userId),
                     reason,
+                    reportStatus: "pending",
                     createdAt: new Date(),
                 });
 
@@ -681,7 +682,7 @@ async function run() {
             }
         });
 
-        
+
         app.post("/api/prompts/:id/rate", async (req, res) => {
             try {
                 const { id } = req.params;
@@ -980,7 +981,117 @@ async function run() {
             }
         });
 
+        // Creator apis:
+        
+        app.get("/api/creator/dashboard", async (req, res) => {
+            try {
+                const { userId } = req.query;
 
+                if (!userId) {
+                    return res.status(400).json({ error: "userId required" });
+                }
+
+                // IMPORTANT: treat everything as STRING (consistent with your DB)
+                const creatorId = userId.toString();
+
+                // 1. GET PROMPTS
+                const prompts = await promptCollection
+                    .find({ creatorId })
+                    .toArray();
+
+                const promptIds = prompts.map(p => p._id.toString());
+
+                // 2. TOTAL PROMPTS
+                const totalPrompts = prompts.length;
+
+                // 3. TOTAL COPIES (FIXED: convert promptId to string match)
+                const totalCopies = await copiedPromptCollection.countDocuments({
+                    promptId: { $in: promptIds.map(id => new ObjectId(id)) }
+                });
+
+                // 4. TOTAL RATINGS
+                const ratingsAgg = await ratingCollection.aggregate([
+                    {
+                        $match: {
+                            promptId: {
+                                $in: prompts.map(p => p._id)
+                            }
+                        }
+                    },
+                    {
+                        $group: {
+                            _id: null,
+                            avgRating: { $avg: "$rating" },
+                            totalRatings: { $sum: 1 }
+                        }
+                    }
+                ]).toArray();
+
+                const avgRating = ratingsAgg[0]?.avgRating || 0;
+                const totalRatings = ratingsAgg[0]?.totalRatings || 0;
+
+                // 5. MOST POPULAR PROMPT (REAL)
+                const mostPopular = await promptCollection
+                    .find({ creatorId })
+                    .sort({ copyCount: -1 })
+                    .limit(1)
+                    .toArray();
+
+                // 6. RECENT COPIES (REAL ACTIVITY)
+                const recentActivity = await copiedPromptCollection.aggregate([
+                    {
+                        $match: {
+                            promptId: { $in: prompts.map(p => p._id) }
+                        }
+                    },
+                    {
+                        $sort: { createdAt: -1 }
+                    },
+                    {
+                        $limit: 5
+                    },
+                    {
+                        $lookup: {
+                            from: "prompts",
+                            localField: "promptId",
+                            foreignField: "_id",
+                            as: "prompt"
+                        }
+                    },
+                    { $unwind: "$prompt" },
+                    {
+                        $project: {
+                            _id: 1,
+                            createdAt: 1,
+                            title: "$prompt.title"
+                        }
+                    }
+                ]).toArray();
+
+                // 7. ENGAGEMENT SCORE
+                const engagementScore =
+                    (totalCopies * 2) +
+                    (totalRatings * 5) +
+                    (totalPrompts * 3);
+
+                res.json({
+                    success: true,
+                    stats: {
+                        totalPrompts,
+                        totalCopies,
+                        totalRatings,
+                        avgRating: Number(avgRating.toFixed(1)),
+                        engagementScore
+                    },
+                    mostPopular: mostPopular[0] || null,
+                    recentActivity
+                });
+
+            } catch (err) {
+                console.error(err);
+                res.status(500).json({ error: "Dashboard failed" });
+            }
+        });
 
         // ===============================
         // GET ALL USERS (ADMIN ONLY)
@@ -1080,6 +1191,400 @@ async function run() {
                 res.status(500).send({ error: "Failed to fetch admin prompts" });
             }
         });
+
+        // continue admin page er backend code
+        // GET ALL REPORTS (with prompt + user info)
+        app.get("/api/admin/reports", async (req, res) => {
+            try {
+                const reports = await reportCollection.aggregate([
+                    {
+                        $sort: { createdAt: -1 }
+                    },
+
+                    // join prompt data
+                    {
+                        $lookup: {
+                            from: "prompts",
+                            localField: "promptId",
+                            foreignField: "_id",
+                            as: "prompt"
+                        }
+                    },
+                    { $unwind: "$prompt" },
+
+                    // join reporter user data
+                    {
+                        $lookup: {
+                            from: "user",
+                            localField: "userId",
+                            foreignField: "_id",
+                            as: "reporter"
+                        }
+                    },
+                    { $unwind: "$reporter" },
+
+                    {
+                        $project: {
+                            _id: 1,
+                            reason: 1,
+                            createdAt: 1,
+                            reportStatus: 1,
+
+                            prompt: {
+                                _id: "$prompt._id",
+                                title: "$prompt.title",
+                                creatorId: "$prompt.creatorId",
+                                status: "$prompt.status"
+                            },
+
+                            reporter: {
+                                _id: "$reporter._id",
+                                name: "$reporter.name",
+                                email: "$reporter.email",
+                                image: "$reporter.image"
+                            }
+                        }
+                    }
+                ]).toArray();
+
+                res.json({
+                    success: true,
+                    data: reports
+                });
+
+            } catch (err) {
+                console.error(err);
+                res.status(500).json({ error: "Failed to fetch reports" });
+            }
+        });
+
+        // DISMISS REPORT (NOT HARMFUL) in admin 
+        app.patch("/api/admin/reports/:id/dismiss", async (req, res) => {
+            try {
+                const { id } = req.params;
+
+                const result = await reportCollection.updateOne(
+                    { _id: new ObjectId(id) },
+                    {
+                        $set: {
+                            reportStatus: "dismissed"
+                        }
+                    }
+                );
+
+                res.json({
+                    success: true,
+                    message: "Report dismissed",
+                    data: result
+                });
+
+            } catch (err) {
+                console.error(err);
+                res.status(500).json({ error: "Failed to dismiss report" });
+            }
+        });
+
+        // WARN CREATOR
+        app.patch("/api/admin/reports/:id/warn", async (req, res) => {
+            try {
+                const { id } = req.params;
+
+                const report = await reportCollection.findOne({
+                    _id: new ObjectId(id)
+                });
+
+                if (!report) {
+                    return res.status(404).json({ error: "Report not found" });
+                }
+
+                await reportCollection.updateOne(
+                    { _id: new ObjectId(id) },
+                    {
+                        $set: {
+                            reportStatus: "warning_sent"
+                        }
+                    }
+                );
+
+                // OPTIONAL: you can increase warning count
+                await userCollection.updateOne(
+                    { _id: new ObjectId(report.userId) },
+                    {
+                        $inc: { warningCount: 1 }
+                    }
+                );
+
+                res.json({
+                    success: true,
+                    message: "Creator warned"
+                });
+
+            } catch (err) {
+                console.error(err);
+                res.status(500).json({ error: "Failed to warn creator" });
+            }
+        });
+
+        // 4. REMOVE PROMPT (HARD ACTION)
+        app.patch("/api/admin/reports/:id/remove", async (req, res) => {
+            try {
+                const { id } = req.params;
+
+                const report = await reportCollection.findOne({
+                    _id: new ObjectId(id)
+                });
+
+                if (!report) {
+                    return res.status(404).json({ error: "Report not found" });
+                }
+
+                // 1. Update report status
+                await reportCollection.updateOne(
+                    { _id: new ObjectId(id) },
+                    {
+                        $set: {
+                            reportStatus: "prompt_removed"
+                        }
+                    }
+                );
+
+                // 2. Remove or deactivate prompt
+                await promptCollection.updateOne(
+                    { _id: new ObjectId(report.promptId) },
+                    {
+                        $set: {
+                            status: "removed",
+                            visibility: "hidden"
+                        }
+                    }
+                );
+
+                res.json({
+                    success: true,
+                    message: "Prompt removed successfully"
+                });
+
+            } catch (err) {
+                console.error(err);
+                res.status(500).json({ error: "Failed to remove prompt" });
+            }
+        });
+
+
+        app.get("/api/admin/analytics", async (req, res) => {
+            try {
+
+                // ==============================
+                // 1. BASIC COUNTS (OVERVIEW)
+                // ==============================
+
+                const totalUsers = await userCollection.countDocuments();
+
+                const totalPrompts = await promptCollection.countDocuments();
+
+                const totalReviews = await ratingCollection.countDocuments();
+
+                const totalCopies = await copiedPromptCollection.countDocuments();
+
+                const totalBookmarks = await bookmarkCollection.countDocuments();
+
+                // ==============================
+                // 2. USER ANALYTICS
+                // ==============================
+
+                const users = await userCollection.aggregate([
+                    {
+                        $group: {
+                            _id: null,
+                            total: { $sum: 1 },
+                            free: {
+                                $sum: {
+                                    $cond: [{ $eq: ["$plan", "free"] }, 1, 0]
+                                }
+                            },
+                            premium: {
+                                $sum: {
+                                    $cond: [{ $eq: ["$plan", "premium"] }, 1, 0]
+                                }
+                            },
+                            creators: {
+                                $sum: {
+                                    $cond: [{ $eq: ["$role", "creator"] }, 1, 0]
+                                }
+                            }
+                        }
+                    }
+                ]).toArray();
+
+                const userStats = users[0] || {};
+
+                // ==============================
+                // 3. PROMPT CONTENT ANALYTICS
+                // ==============================
+
+                const promptStats = await promptCollection.aggregate([
+                    {
+                        $group: {
+                            _id: null,
+                            approved: {
+                                $sum: {
+                                    $cond: [{ $eq: ["$status", "approved"] }, 1, 0]
+                                }
+                            },
+                            pending: {
+                                $sum: {
+                                    $cond: [{ $eq: ["$status", "pending"] }, 1, 0]
+                                }
+                            },
+                            rejected: {
+                                $sum: {
+                                    $cond: [{ $eq: ["$status", "rejected"] }, 1, 0]
+                                }
+                            },
+                            hidden: {
+                                $sum: {
+                                    $cond: [{ $eq: ["$visibility", "hidden"] }, 1, 0]
+                                }
+                            },
+                            public: {
+                                $sum: {
+                                    $cond: [{ $eq: ["$visibility", "public"] }, 1, 0]
+                                }
+                            }
+                        }
+                    }
+                ]).toArray();
+
+                const contentStats = promptStats[0] || {};
+
+                // ==============================
+                // 4. REPORT ANALYTICS
+                // ==============================
+
+                const reportStats = await reportCollection.aggregate([
+                    {
+                        $group: {
+                            _id: null,
+                            total: { $sum: 1 },
+                            pending: {
+                                $sum: {
+                                    $cond: [{ $eq: ["$reportStatus", "pending"] }, 1, 0]
+                                }
+                            },
+                            dismissed: {
+                                $sum: {
+                                    $cond: [{ $eq: ["$reportStatus", "dismissed"] }, 1, 0]
+                                }
+                            },
+                            removed: {
+                                $sum: {
+                                    $cond: [{ $eq: ["$reportStatus", "prompt_removed"] }, 1, 0]
+                                }
+                            },
+                            warned: {
+                                $sum: {
+                                    $cond: [{ $eq: ["$reportStatus", "warning_sent"] }, 1, 0]
+                                }
+                            }
+                        }
+                    }
+                ]).toArray();
+
+                const reports = reportStats[0] || {};
+
+                // ==============================
+                // 5. SUBSCRIPTION ANALYTICS
+                // ==============================
+
+                const subscriptionStats = await subscriptionsCollection.aggregate([
+                    {
+                        $match: { status: "paid" }
+                    },
+                    {
+                        $group: {
+                            _id: null,
+                            paidUsers: { $sum: 1 },
+                            revenue: {
+                                $sum: { $toDouble: "$amount" }
+                            }
+                        }
+                    }
+                ]).toArray();
+
+                const subscriptions = subscriptionStats[0] || {};
+
+                // ==============================
+                // 6. RATINGS AVERAGE
+                // ==============================
+
+                const ratingStats = await ratingCollection.aggregate([
+                    {
+                        $group: {
+                            _id: null,
+                            avgRating: { $avg: "$rating" }
+                        }
+                    }
+                ]).toArray();
+
+                const avgRating = ratingStats[0]?.avgRating || 0;
+
+                // ==============================
+                // FINAL RESPONSE
+                // ==============================
+
+                res.json({
+                    success: true,
+
+                    overview: {
+                        totalUsers,
+                        totalPrompts,
+                        totalReviews,
+                        totalCopies,
+                        totalBookmarks
+                    },
+
+                    users: {
+                        total: userStats.total || totalUsers,
+                        free: userStats.free || 0,
+                        premium: userStats.premium || 0,
+                        creators: userStats.creators || 0
+                    },
+
+                    content: {
+                        approved: contentStats.approved || 0,
+                        pending: contentStats.pending || 0,
+                        rejected: contentStats.rejected || 0,
+                        hidden: contentStats.hidden || 0,
+                        public: contentStats.public || 0
+                    },
+
+                    reports: {
+                        total: reports.total || 0,
+                        pending: reports.pending || 0,
+                        dismissed: reports.dismissed || 0,
+                        removed: reports.removed || 0,
+                        warned: reports.warned || 0
+                    },
+
+                    subscriptions: {
+                        paidUsers: subscriptions.paidUsers || 0,
+                        revenue: subscriptions.revenue || 0
+                    },
+
+                    ratings: {
+                        avgRating: Number(avgRating.toFixed(2))
+                    }
+                });
+
+            } catch (err) {
+                console.error("Admin analytics error:", err);
+                res.status(500).json({
+                    success: false,
+                    error: "Failed to load admin analytics"
+                });
+            }
+        });
+        //  The end 
 
 
         app.patch("/api/admin/prompts/:id/status", async (req, res) => {
@@ -1182,6 +1687,9 @@ async function run() {
                 });
             }
         });
+
+
+
 
         app.patch("/api/admin/prompts/:id/reject", async (req, res) => {
             try {
