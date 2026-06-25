@@ -91,13 +91,13 @@ const adminVerify = async (req, res, next) => {
 };
 
 
-// async function run() {
-//     try {
-//         await client.connect();
+async function run() {
+    try {
+        await client.connect();
 
-        client.connect(() => {
-            console.log('connecting to MOngo db');
-        }).catch(console.dir)
+        // client.connect(() => {
+        //     console.log('connecting to MOngo db');
+        // }).catch(console.dir)
 
 
 
@@ -1705,7 +1705,7 @@ const adminVerify = async (req, res, next) => {
        
 
 
-        app.patch("/api/admin/prompts/:id/status", async (req, res) => {
+        app.patch("/api/admin/prompts/:id/status",verifyToken,adminVerify, async (req, res) => {
             try {
                 const { id } = req.params;
                 const { status, feedback } = req.body;
@@ -1729,7 +1729,7 @@ const adminVerify = async (req, res, next) => {
             }
         });
 
-        app.patch("/api/admin/prompts/:id/feature", async (req, res) => {
+        app.patch("/api/admin/prompts/:id/feature",verifyToken,adminVerify, async (req, res) => {
             try {
                 const { id } = req.params;
                 const { isFeatured } = req.body;
@@ -1773,7 +1773,7 @@ const adminVerify = async (req, res, next) => {
         // });
 
 
-        app.get("/api/feedback/:promptId", async (req, res) => {
+        app.get("/api/feedback/:promptId",verifyToken,adminVerify, async (req, res) => {
             try {
                 const { promptId } = req.params;
 
@@ -1809,7 +1809,7 @@ const adminVerify = async (req, res, next) => {
 
 
 
-        app.patch("/api/admin/prompts/:id/reject", async (req, res) => {
+        app.patch("/api/admin/prompts/:id/reject",verifyToken,adminVerify, async (req, res) => {
             try {
                 const { id } = req.params;
                 const { reason, adminId } = req.body;
@@ -1851,6 +1851,18 @@ const adminVerify = async (req, res, next) => {
         });
 
 
+        // admin delete er api:
+        app.delete('/api/prompts/:promptId', verifyToken, adminVerify, async (req, res) => {
+            const { promptId } = req.params;
+
+            const result = await promptCollection.deleteOne({
+                _id: new ObjectId(promptId),
+            });
+
+            res.send(result);
+        });
+
+
         // ---------------------------------
 
 
@@ -1887,8 +1899,10 @@ const adminVerify = async (req, res, next) => {
         //     res.json(result);
         // });
 
-        // client add prompts
-        app.post("/api/prompts", async (req, res) => {
+
+        //Creator all apis
+        // creator add prompts
+        app.post("/api/prompts",verifyToken,creatorVerify, async (req, res) => {
             try {
                 const promptData = req.body;
 
@@ -1912,7 +1926,7 @@ const adminVerify = async (req, res, next) => {
         });
 
 
-        app.patch("/api/prompts/:promptId", async (req, res) => {
+        app.patch("/api/prompts/:promptId",verifyToken,creatorVerify, async (req, res) => {
             const { promptId } = req.params;
             const updatedData = req.body;
 
@@ -1925,15 +1939,6 @@ const adminVerify = async (req, res, next) => {
         });
 
 
-        app.delete('/api/prompts/:promptId', async (req, res) => {
-            const { promptId } = req.params;
-
-            const result = await promptCollection.deleteOne({
-                _id: new ObjectId(promptId),
-            });
-
-            res.send(result);
-        });
 
 
         // user profile er api:
@@ -1981,7 +1986,7 @@ const adminVerify = async (req, res, next) => {
 
 
         //---------------
-        // public api(here use aggregation)
+        // public api(here use aggregation) no need to verify
         app.get("/api/creators/top", async (req, res) => {
             try {
                 const topCreators = await promptCollection.aggregate([
@@ -2062,16 +2067,16 @@ const adminVerify = async (req, res, next) => {
 
 
         // Send a ping to confirm a successful connection
-//         await client.db("admin").command({ ping: 1 });
-//         console.log(
-//             "Pinged your deployment. You successfully connected to MongoDB!",
-//         );
-//     } finally {
-//         // Ensures that the client will close when you finish/error
-//         // await client.close();
-//     }
-// }
-// run().catch(console.dir);
+        await client.db("admin").command({ ping: 1 });
+        console.log(
+            "Pinged your deployment. You successfully connected to MongoDB!",
+        );
+    } finally {
+        // Ensures that the client will close when you finish/error
+        // await client.close();
+    }
+}
+run().catch(console.dir);
 
 app.get("/", (req, res) => {
     res.send("Server is running fine!");
