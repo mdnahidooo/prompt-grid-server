@@ -1809,7 +1809,7 @@ const adminVerify = async (req, res, next) => {
 
 
 
-        app.patch("/api/admin/prompts/:id/reject",verifyToken,adminVerify, async (req, res) => {
+        app.patch("/api/admin/prompts/:id/reject", async (req, res) => {
             try {
                 const { id } = req.params;
                 const { reason, adminId } = req.body;
