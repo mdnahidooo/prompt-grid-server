@@ -91,9 +91,9 @@ const adminVerify = async (req, res, next) => {
 };
 
 
-async function run() {
-    try {
-        await client.connect();
+// async function run() {
+//     try {
+//         await client.connect();
 
         // client.connect(() => {
         //     console.log('connecting to MOngo db');
@@ -1902,7 +1902,7 @@ async function run() {
 
         //Creator all apis
         // creator add prompts
-        app.post("/api/prompts",verifyToken,creatorVerify, async (req, res) => {
+        app.post("/api/prompts", async (req, res) => {
             try {
                 const promptData = req.body;
 
@@ -1926,7 +1926,7 @@ async function run() {
         });
 
 
-        app.patch("/api/prompts/:promptId",verifyToken,creatorVerify, async (req, res) => {
+        app.patch("/api/prompts/:promptId", async (req, res) => {
             const { promptId } = req.params;
             const updatedData = req.body;
 
@@ -2067,16 +2067,16 @@ async function run() {
 
 
         // Send a ping to confirm a successful connection
-        await client.db("admin").command({ ping: 1 });
-        console.log(
-            "Pinged your deployment. You successfully connected to MongoDB!",
-        );
-    } finally {
-        // Ensures that the client will close when you finish/error
-        // await client.close();
-    }
-}
-run().catch(console.dir);
+//         await client.db("admin").command({ ping: 1 });
+//         console.log(
+//             "Pinged your deployment. You successfully connected to MongoDB!",
+//         );
+//     } finally {
+//         // Ensures that the client will close when you finish/error
+//         // await client.close();
+//     }
+// }
+// run().catch(console.dir);
 
 app.get("/", (req, res) => {
     res.send("Server is running fine!");
