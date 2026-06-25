@@ -1902,7 +1902,7 @@ const adminVerify = async (req, res, next) => {
 
         //Creator all apis
         // creator add prompts
-        app.post("/api/prompts", async (req, res) => {
+        app.post("/api/prompts",verifyToken,creatorVerify, async (req, res) => {
             try {
                 const promptData = req.body;
 
